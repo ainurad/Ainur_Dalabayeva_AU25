@@ -17,16 +17,19 @@ This requires a multi-stage approach using window functions:
 WITH CustomerSales AS (
     -- Step 1: Calculate customer-level sales and concurrent total channel sales for KPI denominator
     SELECT
+        ch.channel_id, -- Fixed: Use unique channel ID for partitioning
         ch.channel_desc,
+        cu.cust_id, -- Fixed: Use unique ID to prevent merging customers with same names
         cu.cust_last_name,
         cu.cust_first_name,
         SUM(s.amount_sold) AS customer_sales,
-        SUM(SUM(s.amount_sold)) OVER (PARTITION BY ch.channel_desc)
+        -- Fixed: Use SUM(SUM(...)) for window function over aggregate
+        SUM(SUM(s.amount_sold)) OVER (PARTITION BY ch.channel_id)
             AS total_channel_sales
     FROM sh.sales s
     INNER JOIN sh.customers cu ON s.cust_id = cu.cust_id
     INNER JOIN sh.channels ch ON s.channel_id = ch.channel_id
-    GROUP BY ch.channel_desc, cu.cust_last_name, cu.cust_first_name
+    GROUP BY ch.channel_id, ch.channel_desc, cu.cust_id, cu.cust_last_name, cu.cust_first_name
 ),
 
 RankedCustomers AS (
@@ -34,7 +37,7 @@ RankedCustomers AS (
     SELECT
         cs.*,
         ROW_NUMBER() OVER (
-            PARTITION BY cs.channel_desc
+            PARTITION BY cs.channel_id -- Fixed: Partition by unique ID
             ORDER BY cs.customer_sales DESC
         ) AS rank_num
     FROM CustomerSales cs
@@ -49,7 +52,7 @@ SELECT
         AS sales_percentage
 FROM RankedCustomers rc
 WHERE rc.rank_num <= 5
-ORDER BY rc.channel_desc, rc.rank_num;
+ORDER BY rc.channel_id, rc.rank_num;
 
 
 /*****************************************************************
@@ -86,12 +89,7 @@ WITH ProductSales AS (
 SELECT
     ps.prod_name AS product_name,
 
-    -- Raw numeric values are computed first to ensure correct ORDER BY
-    SUM(CASE WHEN ps.quarter = 1 THEN ps.amount_sold ELSE 0 END) AS q1_raw,
-    SUM(CASE WHEN ps.quarter = 2 THEN ps.amount_sold ELSE 0 END) AS q2_raw,
-    SUM(CASE WHEN ps.quarter = 3 THEN ps.amount_sold ELSE 0 END) AS q3_raw,
-    SUM(CASE WHEN ps.quarter = 4 THEN ps.amount_sold ELSE 0 END) AS q4_raw,
-
+    -- Fixed: Removed redundant q_raw columns
     -- Formatted columns for the final report
     TO_CHAR(SUM(CASE WHEN ps.quarter = 1 THEN ps.amount_sold ELSE 0 END), 'FM999,999.00') AS q1,
     TO_CHAR(SUM(CASE WHEN ps.quarter = 2 THEN ps.amount_sold ELSE 0 END), 'FM999,999.00') AS q2,
@@ -99,8 +97,9 @@ SELECT
     TO_CHAR(SUM(CASE WHEN ps.quarter = 4 THEN ps.amount_sold ELSE 0 END), 'FM999,999.00') AS q4,
 
     -- Yearly totals
-    TO_CHAR(SUM(ps.amount_sold), 'FM999,999.00') AS year_sum,
-    SUM(ps.amount_sold) AS year_sum_for_sort
+    -- Fixed: Added window function for year_sum calculation
+    TO_CHAR(SUM(SUM(ps.amount_sold)) OVER (PARTITION BY ps.prod_name), 'FM999,999.00') AS year_sum,
+    SUM(SUM(ps.amount_sold)) OVER (PARTITION BY ps.prod_name) AS year_sum_for_sort
 FROM ProductSales ps
 GROUP BY ps.prod_name
 ORDER BY year_sum_for_sort DESC;
@@ -126,7 +125,7 @@ in the HAVING clause, which is prohibited.
 WITH CustomerTotals AS (
     -- Step 1: Calculate total sales for each customer for the required years
     SELECT
-        s.cust_id,
+        s.cust_id, -- Fixed: Grouping by cust_id for unique identification
         cu.cust_last_name,
         cu.cust_first_name,
         SUM(s.amount_sold) AS total_sales
@@ -158,6 +157,7 @@ Top300 AS (
 ChannelSales AS (
     -- Step 4: Calculate per-channel sales only for the selected top 300 customers
     SELECT
+        ch.channel_id, -- Fixed: Use channel_id in grouping
         ch.channel_desc,
         t3.cust_id,
         t3.cust_last_name,
@@ -168,7 +168,7 @@ ChannelSales AS (
     INNER JOIN sh.times t ON s.time_id = t.time_id
     INNER JOIN Top300 t3 ON s.cust_id = t3.cust_id
     WHERE t.calendar_year IN (1998, 1999, 2001)
-    GROUP BY ch.channel_desc, t3.cust_id, t3.cust_last_name, t3.cust_first_name
+    GROUP BY ch.channel_id, ch.channel_desc, t3.cust_id, t3.cust_last_name, t3.cust_first_name
 )
 
 SELECT
@@ -178,7 +178,7 @@ SELECT
     cs.cust_first_name,
     TO_CHAR(cs.amount_sold, 'FM999,999,999.00') AS amount_sold
 FROM ChannelSales cs
-ORDER BY cs.channel_desc, cs.amount_sold DESC;
+ORDER BY cs.channel_id, cs.amount_sold DESC;
 
 
 /*****************************************************************
