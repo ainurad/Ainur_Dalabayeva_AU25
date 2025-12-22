@@ -85,58 +85,52 @@ ORDER BY
        * Other days -> previous, current, next day
    ============================================================================= */
 
+/* =============================================================================
+   TASK 2: Weekly Sales Analysis (Weeks 49-51, 1999)
+   Requirements:
+   - Calculate CUM_SUM: Weekly cumulative sales total.
+   - Calculate CENTERED_3_DAY_AVG: Centered moving average with specific logic 
+     for Monday (Sat-Tue) and Friday (Thu-Sun).
+   - Ensure boundary accuracy for the start of week 49 and end of week 51.
+   ============================================================================= */
+
 WITH DailyAggregated AS (
-    -- Aggregate sales at daily level
-    -- Include adjacent weeks / year to handle borders correctly
+    -- Aggregating sales by day. Using a wider date range to ensure border accuracy.
     SELECT 
-        t.calendar_year,
-        t.calendar_date,
+        t.time_id, 
         t.calendar_week_number,
-        t.day_name,
+        TRIM(TO_CHAR(t.time_id, 'Day')) AS day_name, 
         SUM(s.amount_sold) AS daily_amount
-    FROM sales s
-    JOIN times t ON s.time_id = t.time_id
+    FROM sh.sales s
+    JOIN sh.times t ON s.time_id = t.time_id
     WHERE t.calendar_year IN (1999, 2000)
-    GROUP BY 
-        t.calendar_year,
-        t.calendar_date,
-        t.calendar_week_number,
-        t.day_name
+    GROUP BY t.time_id, t.calendar_week_number, t.day_name
 )
 SELECT 
-    calendar_date,
+    time_id,
     calendar_week_number,
-
-    -- Cumulative sum of sales within the same year and week
+    -- CUM_SUM: Resets at the beginning of each week.
     SUM(daily_amount) OVER (
-        PARTITION BY calendar_year, calendar_week_number
-        ORDER BY calendar_date
+        PARTITION BY calendar_week_number 
+        ORDER BY time_id 
         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
     ) AS CUM_SUM,
-
-    -- Centered moving average with weekday-specific window frames
-    CASE
-        WHEN day_name = 'Monday' THEN
-            AVG(daily_amount) OVER (
-                ORDER BY calendar_date
-                ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING
-            )
-        WHEN day_name = 'Friday' THEN
-            AVG(daily_amount) OVER (
-                ORDER BY calendar_date
-                ROWS BETWEEN 1 PRECEDING AND 2 FOLLOWING
-            )
-        ELSE
-            AVG(daily_amount) OVER (
-                ORDER BY calendar_date
-                ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
-            )
+    -- CENTERED_3_DAY_AVG: Special window frame logic based on the day of the week.
+    CASE 
+        WHEN day_name = 'Monday' THEN 
+            -- Includes 2 preceding rows (Sat, Sun) and 1 following row (Tue).
+            AVG(daily_amount) OVER (ORDER BY time_id ROWS BETWEEN 2 PRECEDING AND 1 FOLLOWING)
+        WHEN day_name = 'Friday' THEN 
+            -- Includes 1 preceding row (Thu) and 2 following rows (Sat, Sun).
+            AVG(daily_amount) OVER (ORDER BY time_id ROWS BETWEEN 1 PRECEDING AND 2 FOLLOWING)
+        ELSE 
+            -- Standard 3-day window: Yesterday, Today, and Tomorrow.
+            AVG(daily_amount) OVER (ORDER BY time_id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)
     END AS CENTERED_3_DAY_AVG
 FROM DailyAggregated
-WHERE calendar_year = 1999
-  AND calendar_week_number BETWEEN 49 AND 51
-ORDER BY calendar_date;
-
+WHERE calendar_week_number BETWEEN 49 AND 51
+  AND EXTRACT(YEAR FROM time_id) = 1999
+ORDER BY time_id;
 
 /* =============================================================================
    TASK 3
@@ -148,50 +142,36 @@ ORDER BY calendar_date;
        3) GROUPS (peer groups)
    ============================================================================= */
 
-
--- ---------------------------------------------------------------------------
--- 1) ROWS FRAME
--- Physical row-based window.
--- Calculates a rolling sum over the last 5 rows.
--- ---------------------------------------------------------------------------
-SELECT 
-    t.calendar_date,
-    s.amount_sold,
-    SUM(s.amount_sold) OVER (
-        ORDER BY t.calendar_date
+-- 1) ROWS Mode: Physical row-based window.
+-- Reason: Chosen when you need a fixed number of records regardless of their values 
+-- (e.g., exactly the last 5 transactions).
+SELECT time_id, amount_sold,
+    SUM(amount_sold) OVER (
+        ORDER BY time_id 
         ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
-    ) AS sum_last_5_rows
-FROM sales s
-JOIN times t ON s.time_id = t.time_id;
+    ) as rows_sum_last_5
+FROM sh.sales
+LIMIT 10;
 
-
--- ---------------------------------------------------------------------------
--- 2) RANGE FRAME
--- Logical time-based window.
--- Includes all sales from the last 3 calendar days.
--- ---------------------------------------------------------------------------
-SELECT 
-    t.calendar_date,
-    s.amount_sold,
-    SUM(s.amount_sold) OVER (
-        ORDER BY t.calendar_date
+-- 2) RANGE Mode: Logical value-based window (Time/Date).
+-- Reason: Essential for time-series analysis where you need to include all 
+-- records within a specific logical interval (e.g., the last 3 days).
+SELECT time_id, amount_sold,
+    SUM(amount_sold) OVER (
+        ORDER BY time_id 
         RANGE BETWEEN INTERVAL '3' DAY PRECEDING AND CURRENT ROW
-    ) AS sum_last_3_days
-FROM sales s
-JOIN times t ON s.time_id = t.time_id;
+    ) as range_sum_3_days
+FROM sh.sales
+LIMIT 10;
 
-
--- ---------------------------------------------------------------------------
--- 3) GROUPS FRAME
--- Peer-group based window.
--- Treats each distinct date as a single group.
--- ---------------------------------------------------------------------------
-SELECT 
-    t.calendar_date,
-    s.amount_sold,
-    AVG(s.amount_sold) OVER (
-        ORDER BY t.calendar_date
+-- 3) GROUPS Mode: Peer-group based window.
+-- Reason: Used when rows with identical sort values (e.g., the same date) 
+-- should be treated as a single unit. It counts the number of distinct groups 
+-- rather than rows or values.
+SELECT time_id, amount_sold,
+    AVG(amount_sold) OVER (
+        ORDER BY time_id 
         GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW
-    ) AS avg_last_3_distinct_days
-FROM sales s
-JOIN times t ON s.time_id = t.time_id;
+    ) as groups_avg_last_3_dates
+FROM sh.sales
+LIMIT 10;
